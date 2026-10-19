@@ -46,13 +46,31 @@ async function getTranscript(id) {
     throw new Error(status && status !== 'OK' ? 'YouTube từ chối (' + status + ')' : 'Video không có phụ đề');
   }
   const t = tracks.find((x) => x.languageCode === 'vi') || tracks.find((x) => x.kind !== 'asr') || tracks[0];
-  const c = await fetch(t.baseUrl + '&fmt=json3', { headers: { 'User-Agent': UA } });
-  const txt = await c.text();
+  const c = await fetch(t.baseUrl.replace(/&fmt=[^&]*/g, '') + '&fmt=json3', { headers: { 'User-Agent': UA } });
+  const txt = (await c.text()).trim();
   if (!txt) throw new Error('YouTube trả về phụ đề rỗng');
-  const d = JSON.parse(txt);
-  const segs = merge(d.events || []);
+  const segs = merge(txt.startsWith('{') ? (JSON.parse(txt).events || []) : parseXml(txt));
   if (!segs.length) throw new Error('Phụ đề trống');
   return { lang: t.languageCode, segs };
+}
+
+function unesc(s) {
+  const f = (x) => x
+    .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(+n))
+    .replace(/&#x([0-9a-f]+);/gi, (_, n) => String.fromCodePoint(parseInt(n, 16)))
+    .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, '&');
+  return f(f(s.replace(/<[^>]+>/g, '')));
+}
+
+function parseXml(x) {
+  const ev = [];
+  let m;
+  const re1 = /<text start="([\d.]+)"(?: dur="([\d.]+)")?[^>]*>([\s\S]*?)<\/text>/g;
+  while ((m = re1.exec(x))) ev.push({ tStartMs: +m[1] * 1000, dDurationMs: (+m[2] || 2) * 1000, segs: [{ utf8: unesc(m[3]) }] });
+  if (ev.length) return ev;
+  const re2 = /<p t="(\d+)"(?: d="(\d+)")?[^>]*>([\s\S]*?)<\/p>/g;
+  while ((m = re2.exec(x))) ev.push({ tStartMs: +m[1], dDurationMs: +m[2] || 2000, segs: [{ utf8: unesc(m[3]) }] });
+  return ev;
 }
 
 function merge(events) {
