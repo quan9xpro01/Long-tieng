@@ -107,7 +107,19 @@ async function translate(lines) {
 }
 
 // ---------- Giọng Edge TTS ----------
-function tts(text, voice) {
+async function tts(text, voice) {
+  const hosts = [
+    'wss://api.msedgeservices.com/tts/cognitiveservices/websocket/v1?Ocp-Apim-Subscription-Key=' + TOKEN,
+    'wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1?TrustedClientToken=' + TOKEN,
+  ];
+  let last = new Error('Không có máy chủ');
+  for (const h of hosts) {
+    try { return await ttsOnce(h, text, voice); } catch (e) { last = e; }
+  }
+  throw new Error(last.message + ' (đã thử cả 2 máy chủ)');
+}
+
+function ttsOnce(base, text, voice) {
   return new Promise((resolve, reject) => {
     text = String(text || '').trim().slice(0, 800);
     if (!text) return reject(new Error('Thiếu nội dung'));
@@ -116,8 +128,7 @@ function tts(text, voice) {
     let s = BigInt(Math.floor(Date.now() / 1000) + 11644473600);
     s -= s % 300n;
     const gec = crypto.createHash('sha256').update((s * 10000000n).toString() + TOKEN, 'ascii').digest('hex').toUpperCase();
-    const url = 'wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1'
-      + '?TrustedClientToken=' + TOKEN
+    const url = base
       + '&Sec-MS-GEC=' + gec
       + '&Sec-MS-GEC-Version=1-143.0.3650.75'
       + '&ConnectionId=' + crypto.randomUUID().replace(/-/g, '');
@@ -125,6 +136,7 @@ function tts(text, voice) {
       headers: {
         Pragma: 'no-cache',
         'Cache-Control': 'no-cache',
+        'Ocp-Apim-Subscription-Key': TOKEN,
         Origin: 'chrome-extension://jdiccldimpdaibmpdkjnbmckianbfold',
         'User-Agent': UA,
       },
