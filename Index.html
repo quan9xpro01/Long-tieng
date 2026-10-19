@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Lồng tiếng">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="referrer" content="strict-origin-when-cross-origin">
+<meta name="theme-color" content="#16212b">
+<title>Lồng tiếng</title>
+<style>
+*{box-sizing:border-box}
+html,body{margin:0;background:#16212b;color:#e9eef3;font:16px/1.5 -apple-system,system-ui,"Segoe UI",sans-serif}
+body{padding:max(14px,env(safe-area-inset-top)) 14px max(18px,env(safe-area-inset-bottom));max-width:640px;margin:0 auto}
+h1{font-size:20px;margin:4px 0 12px}
+.row{display:flex;gap:8px;margin-bottom:12px}
+input[type=text]{flex:1;min-width:0;padding:12px;border-radius:10px;border:1px solid #34475a;background:#1f2e3b;color:inherit;font-size:16px}
+button{padding:12px 18px;border:0;border-radius:10px;background:#f0b44c;color:#2a1c00;font-size:16px;font-weight:600}
+#pw{aspect-ratio:16/9;background:#000;border-radius:12px;overflow:hidden}
+#pw iframe{width:100%;height:100%;border:0}
+#st{margin:10px 0;font-size:14px;color:#9fb3c4;min-height:21px}
+#sub{min-height:84px;padding:12px;border-radius:10px;background:#1f2e3b;font-size:18px;line-height:1.45}
+.opt{margin-top:14px;display:grid;gap:12px;font-size:15px}
+.opt label{display:grid;gap:4px;color:#9fb3c4}
+select{padding:10px;border-radius:10px;border:1px solid #34475a;background:#1f2e3b;color:#e9eef3;font-size:16px}
+input[type=range]{width:100%}
+.chk{display:flex;gap:8px;align-items:center;color:#e9eef3!important}
+</style>
+</head>
+<body>
+<h1>Lồng tiếng YouTube</h1>
+<div class="row">
+  <input type="text" id="url" placeholder="Dán link YouTube" inputmode="url" autocapitalize="off" autocorrect="off">
+  <button id="go">Tải</button>
+</div>
+<div id="pw"><div id="yt"></div></div>
+<div id="st">Dán link rồi bấm Tải. Sau đó bấm phát video.</div>
+<div id="sub"></div>
+<div class="opt">
+  <label>Giọng đọc
+    <select id="voice">
+      <option value="vi-VN-HoaiMyNeural">Hoài My (nữ)</option>
+      <option value="vi-VN-NamMinhNeural">Nam Minh (nam)</option>
+      <option value="sys">Giọng có sẵn của iPhone</option>
+    </select>
+  </label>
+  <label>Tốc độ đọc tối thiểu
+    <input type="range" id="speed" min="0.8" max="1.4" step="0.05" value="1">
+  </label>
+  <label class="chk"><input type="checkbox" id="mute" checked> Tắt tiếng gốc của video</label>
+</div>
+<script>
+const $ = s => document.querySelector(s);
+const SIL = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=';
+const audio = new Audio();
+let player = null, segs = [], next = 0, lastT = 0, speaking = false, gen = 0, tok = 0, edgeFail = 0;
+const cache = new Map();
+const ytReady = new Promise(r => { window.onYouTubeIframeAPIReady = r; });
+
+function say(m) { $('#st').textContent = m; }
+
+function vidId(s) {
+  s = s.trim();
+  const m = s.match(/(?:v=|youtu\.be\/|shorts\/|embed\/|live\/)([\w-]{11})/);
+  if (m) return m[1];
+  return /^[\w-]{11}$/.test(s) ? s : null;
+}
+
+async function load() {
+  const id = vidId($('#url').value);
+  if (!id) return say('Link YouTube không hợp lệ. Hãy dán lại.');
+  audio.src = SIL; audio.play().catch(() => {});
+  gen++; stopSpeech(); segs = []; cache.clear(); next = 0; lastT = 0; edgeFail = 0;
+  $('#sub').textContent = '';
+  say('Đang lấy phụ đề…');
+  try {
+    const r = await fetch('/api/dub?a=tr&v=' + id);
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || 'Lỗi không rõ');
+    segs = j.segs.map(s => ({ s: s.s, e: s.e, t: s.t, vi: null }));
+  } catch (e) { return say('Không lấy được phụ đề: ' + e.message); }
+  await mkPlayer(id);
+  say('Đã tải ' + segs.length + ' đoạn. Đang dịch… Bấm phát video để bắt đầu.');
+  translateAll(gen);
+}
+
+async function translateAll(my) {
+  for (let i = 0; i < segs.length; i += 20) {
+    if (my !== gen) return;
+    const part = segs.slice(i, i + 20);
+    let out = null;
+    for (let k = 0; k < 2 && !out; k++) {
+      try {
+        const r = await fetch('/api/dub?a=tl', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ lines: part.map(s => s.t) }) });
+        const j = await r.json();
+        if (r.ok) out = j.out;
+      } catch (e) { /* thử lại */ }
+    }
+    part.forEach((s, k) => { s.vi = out ? (out[k] || '') : ''; });
+    if (my === gen) say('Đã dịch ' + Math.min(i + 20, segs.length) + '/' + segs.length + ' đoạn.');
+  }
+}
+
+async function mkPlayer(id) {
+  await ytReady;
+  if (player && player.cueVideoById) { player.cueVideoById(id); return; }
+  await new Promise(res => {
+    player = new YT.Player('yt', {
+      videoId: id,
+      playerVars: { playsinline: 1, rel: 0, origin: location.origin },
+      events: { onReady: () => { applyMute(); res(); }, onStateChange: onState }
+    });
+  });
+}
+
+function applyMute() {
+  if (!player || !player.mute) return;
+  if ($('#mute').checked) player.mute(); else player.unMute();
+}
+
+function onState(e) {
+  if (e.data === 1) {
+    if (speaking && audio.src && audio.paused && !audio.ended) audio.play().catch(() => {});
+    if (window.speechSynthesis) speechSynthesis.resume();
+  } else if (e.data === 2 || e.data === 3 || e.data === 0) {
+    audio.pause();
+    if (window.speechSynthesis) speechSynthesis.pause();
+  }
+}
+
+function stopSpeech() {
+  tok++; speaking = false;
+  audio.pause();
+  audio.onended = audio.onerror = audio.onloadedmetadata = null;
+  if (window.speechSynthesis) speechSynthesis.cancel();
+}
+
+function tick() {
+  if (!player || !player.getPlayerState || player.getPlayerState() !== 1 || !segs.length) return;
+  const t = player.getCurrentTime();
+  if (t < lastT - 1 || t > lastT + 3) {
+    stopSpeech();
+    next = segs.findIndex(s => s.s >= t - 0.3);
+    if (next < 0) next = segs.length;
+  }
+  lastT = t;
+  if (speaking || next >= segs.length) return;
+  const s = segs[next];
+  if (t < s.s) return;
+  if (s.vi === null) return;
+  if (s.vi === '' || (t - s.s > 3 && next + 1 < segs.length && segs[next + 1].s <= t)) { next++; return; }
+  speak(next++);
+}
+
+async function speak(i) {
+  const my = ++tok, s = segs[i];
+  speaking = true;
+  $('#sub').textContent = s.vi;
+  const av = Math.max(1.2, (segs[i + 1] ? segs[i + 1].s : s.e + 1.5) - s.s);
+  try {
+    if ($('#voice').value === 'sys' || edgeFail >= 3) await sysSpeak(s.vi, av);
+    else { await edgeSpeak(i, av); edgeFail = 0; }
+  } catch (e) {
+    edgeFail++;
+    say('Giọng Edge lỗi (' + e.message + '). Tạm dùng giọng iPhone.');
+    if (my === tok) await sysSpeak(s.vi, av).catch(() => {});
+  }
+  if (my === tok) speaking = false;
+}
+
+function getAudio(i) {
+  if (!cache.has(i)) {
+    const q = new URLSearchParams({ a: 'tts', voice: $('#voice').value, text: segs[i].vi });
+    const p = fetch('/api/dub?' + q)
+      .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.blob(); })
+      .then(b => URL.createObjectURL(b));
+    p.catch(() => cache.delete(i));
+    cache.set(i, p);
+  }
+  return cache.get(i);
+}
+
+async function edgeSpeak(i, av) {
+  const url = await getAudio(i);
+  for (let k = 1; k <= 3; k++) if (segs[i + k] && segs[i + k].vi) getAudio(i + k).catch(() => {});
+  await new Promise((res, rej) => {
+    audio.onloadedmetadata = () => {
+      audio.playbackRate = Math.max(+$('#speed').value, Math.min(1.5, audio.duration / av));
+      audio.play().catch(rej);
+    };
+    audio.onended = res;
+    audio.onerror = () => rej(new Error('audio'));
+    audio.src = url;
+  });
+}
+
+function sysSpeak(txt, av) {
+  return new Promise((res, rej) => {
+    if (!window.speechSynthesis) return rej(new Error('không có giọng hệ thống'));
+    const u = new SpeechSynthesisUtterance(txt);
+    u.lang = 'vi-VN';
+    const v = speechSynthesis.getVoices().find(x => x.lang.replace('_', '-').startsWith('vi'));
+    if (v) u.voice = v;
+    u.rate = Math.min(1.8, Math.max(+$('#speed').value, txt.length / 14 / av));
+    u.onend = res; u.onerror = () => res();
+    speechSynthesis.speak(u);
+  });
+}
+
+$('#go').onclick = load;
+$('#url').addEventListener('keydown', e => { if (e.key === 'Enter') load(); });
+$('#mute').onchange = applyMute;
+$('#voice').onchange = () => { cache.clear(); edgeFail = 0; };
+setInterval(tick, 250);
+const sc = document.createElement('script');
+sc.src = 'https://www.youtube.com/iframe_api';
+document.head.appendChild(sc);
+</script>
+</body>
+</html>
